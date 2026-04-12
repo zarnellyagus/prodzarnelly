@@ -1,0 +1,11 @@
+A compatible .NET SDK was not found.
+Requested SDK version: 8.0.22
+Install the [8.0.22] .NET SDK or update [C:\Users\ni77\global.json]
+
+# Install tool
+dotnet tool install --global dotnet-svcutil
+
+# Generate proxy dari WSDL
+dotnet-svcutil "http://10.154.5.45:8093/TXLife/services/TXLife?wsdl" ^
+  --outputDir "Connected Services/TXLifeProxy" ^
+  --namespace "*,TXLifeProxy"
