@@ -1,0 +1,4 @@
+
+npm install @fortawesome/fontawesome-free
+npm install exceljs file-saver
+npm install --save-dev @types/file-saver
