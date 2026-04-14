@@ -1,0 +1,45 @@
+BEGIN TRANSACTION;
+
+UPDATE dbo.Mahasiswa
+SET Nama = 'Andi'
+WHERE NIM = '12345';
+
+SELECT * 
+FROM dbo.Mahasiswa
+WHERE NIM = '12345';
+
+-- Jika benar:
+-- COMMIT TRANSACTION;
+
+-- Jika salah:
+ROLLBACK TRANSACTION;
+
+BEGIN TRANSACTION;
+
+INSERT INTO dbo.LogAktivitas(Keterangan)
+VALUES ('Langkah 1');
+
+SAVE TRANSACTION sp1;
+
+UPDATE dbo.LogAktivitas
+SET Keterangan = 'Langkah 2'
+WHERE Keterangan = 'Langkah 1';
+
+ROLLBACK TRANSACTION sp1;
+
+COMMIT TRANSACTION;
+
+Contoh aman
+Contoh berikut cocok kalau Anda ingin uji dulu sebelum benar-benar menyimpan perubahan.
+
+sql
+BEGIN TRANSACTION;
+
+DELETE FROM dbo.Karyawan
+WHERE KaryawanID = 5;
+
+SELECT * 
+FROM dbo.Karyawan
+WHERE KaryawanID = 5;
+
+ROLLBACK TRANSACTION;
