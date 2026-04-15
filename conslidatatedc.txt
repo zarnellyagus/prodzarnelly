@@ -1,0 +1,90 @@
+[HttpGet("consolidated")]
+[AllowAnonymous]
+public async Task<IActionResult> GetConsolidated(
+    [FromQuery] string? startDate,
+    [FromQuery] string? endDate,
+    [FromQuery] string? policyID,
+    [FromQuery] string? appNo,       // ← tambah
+    [FromQuery] string? settleDate)  // ← tambah
+{
+    try
+    {
+        var connStr = _config.GetConnectionString("NDIPRINT33");
+        var dt = new DataTable();
+
+        await using var conn = new SqlConnection(connStr!);
+        await using var cmd  = new SqlCommand("usp_extract_pi_consolidated", conn)
+        {
+            CommandType    = CommandType.StoredProcedure,
+            CommandTimeout = 300
+        };
+
+        cmd.Parameters.Add("@startdate", SqlDbType.DateTime).Value =
+            string.IsNullOrEmpty(startDate)
+                ? DBNull.Value : (object)DateTime.Parse(startDate);
+
+        cmd.Parameters.Add("@enddate", SqlDbType.DateTime).Value =
+            string.IsNullOrEmpty(endDate)
+                ? DBNull.Value : (object)DateTime.Parse(endDate);
+
+        cmd.Parameters.Add("@policyID", SqlDbType.VarChar, 10).Value =
+            string.IsNullOrEmpty(policyID)
+                ? DBNull.Value : (object)policyID.Trim();
+
+        // ← Tambahkan ke SP jika SP mendukung, atau filter di C#
+        // Jika SP belum support appNo & settleDate,
+        // filter manual setelah fetch:
+        await conn.OpenAsync();
+        using var adapter = new SqlDataAdapter(cmd);
+        adapter.Fill(dt);
+
+        // ── Filter appNo di sisi C# ────────────────────────────
+        IEnumerable<DataRow> rows = dt.AsEnumerable();
+
+        if (!string.IsNullOrEmpty(appNo))
+            rows = rows.Where(r =>
+                r["spajno"]?.ToString()
+                    ?.Contains(appNo, StringComparison.OrdinalIgnoreCase) == true);
+
+        if (!string.IsNullOrEmpty(settleDate) &&
+            DateTime.TryParse(settleDate, out var sd))
+            rows = rows.Where(r =>
+                r["settle_date"]?.ToString()?.Contains(
+                    sd.ToString("dd MMM yyyy"),
+                    StringComparison.OrdinalIgnoreCase) == true);
+
+        var filtered = rows.ToList();
+
+        var columns = dt.Columns
+            .Cast<DataColumn>()
+            .Select(c => c.ColumnName)
+            .ToList();
+
+        var result = filtered.Select(row => {
+            var dict = new Dictionary<string, object?>();
+            foreach (DataColumn col in dt.Columns)
+                dict[col.ColumnName] = row[col] == DBNull.Value ? null : row[col];
+            return dict;
+        }).ToList();
+
+        var json = JsonSerializer.Serialize(new {
+            success = true,
+            total   = result.Count,
+            columns,
+            data    = result
+        });
+
+        return Content(json, "application/json");
+    }
+    catch (SqlException sqlEx)
+    {
+        return StatusCode(500, new {
+            success = false,
+            message = $"SQL Error {sqlEx.Number}: {sqlEx.Message}"
+        });
+    }
+    catch (Exception ex)
+    {
+        return StatusCode(500, new { success = false, message = ex.Message });
+    }
+}
