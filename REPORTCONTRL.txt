@@ -1,0 +1,161 @@
+// Controllers/ReportController.cs
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Cors;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.Data.SqlClient;
+using System.Data;
+using System.Text.Json;
+
+namespace Backendconsolapp.Controllers
+{
+    [ApiController]
+    [Route("api/[controller]")]
+    [EnableCors("AllowAngular")]
+    public class ReportController : ControllerBase
+    {
+        private readonly IConfiguration _config;
+        private readonly ILogger<ReportController> _logger;
+
+        public ReportController(
+            IConfiguration config,
+            ILogger<ReportController> logger)
+        {
+            _config = config;
+            _logger = logger;
+        }
+
+        // GET /api/report/consolidated
+        [HttpGet("consolidated")]
+        [AllowAnonymous]
+        public async Task<IActionResult> GetConsolidated(
+            [FromQuery] string? startDate,
+            [FromQuery] string? endDate,
+            [FromQuery] string? policyID,
+            [FromQuery] string? appNo,
+            [FromQuery] string? dateType,       // "settleDate" | "downloadDate"
+            [FromQuery] string? settleDate,
+            [FromQuery] string? downloadDate)
+        {
+            try
+            {
+                // ── Validasi wajib ────────────────────────────────────
+                if (string.IsNullOrEmpty(startDate) || string.IsNullOrEmpty(endDate))
+                    return BadRequest(new { success = false, message = "startDate dan endDate wajib diisi." });
+
+                if (!DateTime.TryParse(startDate, out var dtStart))
+                    return BadRequest(new { success = false, message = "Format startDate tidak valid." });
+
+                if (!DateTime.TryParse(endDate, out var dtEnd))
+                    return BadRequest(new { success = false, message = "Format endDate tidak valid." });
+
+                if (dtStart > dtEnd)
+                    return BadRequest(new { success = false, message = "startDate tidak boleh lebih besar dari endDate." });
+
+                // ── Resolve date kondisional ──────────────────────────
+                DateTime? dtSettle = null;
+                DateTime? dtDownload = null;
+
+                if (dateType == "settleDate" && !string.IsNullOrEmpty(settleDate))
+                    dtSettle = DateTime.Parse(settleDate);
+
+                if (dateType == "downloadDate" && !string.IsNullOrEmpty(downloadDate))
+                    dtDownload = DateTime.Parse(downloadDate);
+
+                // ── Eksekusi SP ───────────────────────────────────────
+                var connStr = _config.GetConnectionString("NDIPRINT33")
+                    ?? throw new InvalidOperationException("Connection string NDIPRINT33 tidak ditemukan.");
+
+                var dt = new DataTable();
+
+                await using var conn = new SqlConnection(connStr);
+                await using var cmd = new SqlCommand("usp_extract_pi_consolidated", conn)
+                {
+                    CommandType = CommandType.StoredProcedure,
+                    CommandTimeout = 300
+                };
+
+                cmd.Parameters.Add("@startdate", SqlDbType.DateTime).Value =
+                    (object)dtStart;
+
+                cmd.Parameters.Add("@enddate", SqlDbType.DateTime).Value =
+                    (object)dtEnd;
+
+                cmd.Parameters.Add("@settledate", SqlDbType.DateTime).Value =
+                    dtSettle.HasValue ? (object)dtSettle.Value : DBNull.Value;
+
+                cmd.Parameters.Add("@downloaddate", SqlDbType.DateTime).Value =
+                    dtDownload.HasValue ? (object)dtDownload.Value : DBNull.Value;
+
+                cmd.Parameters.Add("@policyID", SqlDbType.VarChar, 10).Value =
+                    string.IsNullOrEmpty(policyID) ? DBNull.Value : (object)policyID.Trim();
+
+                cmd.Parameters.Add("@appNo", SqlDbType.VarChar, 20).Value =
+                    string.IsNullOrEmpty(appNo) ? DBNull.Value : (object)appNo.Trim();
+
+                _logger.LogInformation(
+                    "GetConsolidated: start={Start}, end={End}, dateType={DateType}, policy={Policy}, appNo={AppNo}",
+                    dtStart, dtEnd, dateType, policyID, appNo);
+
+                await conn.OpenAsync();
+                using var adapter = new SqlDataAdapter(cmd);
+                adapter.Fill(dt);
+
+                // ── Build response ────────────────────────────────────
+                var columns = dt.Columns
+                    .Cast<DataColumn>()
+                    .Select(c => c.ColumnName)
+                    .ToList();
+
+                var result = new List<Dictionary<string, object?>>();
+                foreach (DataRow row in dt.Rows)
+                {
+                    var dict = new Dictionary<string, object?>();
+                    foreach (DataColumn col in dt.Columns)
+                        dict[col.ColumnName] = row[col] == DBNull.Value ? null : row[col];
+                    result.Add(dict);
+                }
+
+                _logger.LogInformation("GetConsolidated result: {Count} rows", result.Count);
+
+                // ← Serialize manual agar key Dictionary tidak di-camelCase
+                var json = JsonSerializer.Serialize(new
+                {
+                    success = true,
+                    total = result.Count,
+                    columns,
+                    data = result
+                });
+
+                return Content(json, "application/json");
+            }
+            catch (SqlException sqlEx)
+            {
+                _logger.LogError(sqlEx, "GetConsolidated SQL Error {Number}", sqlEx.Number);
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = $"SQL Error {sqlEx.Number}: {sqlEx.Message}"
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "GetConsolidated unexpected error");
+                return StatusCode(500, new { success = false, message = ex.Message });
+            }
+        }
+    }
+}
+
+
+
+  // ── Untuk Report Controller ───────────────────────────────────
+    public class ConsolidatedReportRequest
+    {
+        public string? StartDate    { get; set; }
+        public string? EndDate      { get; set; }
+        public string? PolicyID     { get; set; }
+        public string? AppNo        { get; set; }
+        public string? DateType     { get; set; }   // "settleDate" | "downloadDate"
+        public string? SettleDate   { get; set; }
+        public string? DownloadDate { get; set; }
+    }
