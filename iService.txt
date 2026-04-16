@@ -1,0 +1,214 @@
+using System.Globalization;
+using System.Text;
+using System.Xml.Linq;
+using Ingenium.Api.Options;
+using Microsoft.Extensions.Options;
+using salesforcewsdl.Models;
+
+namespace Ingenium.Api.Services;
+
+public class IngeniumService : IIngeniumService
+{
+    private readonly HttpClient _httpClient;
+    private readonly TXLifeSettings _settings;
+
+    public IngeniumService(HttpClient httpClient, IOptions<TXLifeSettings> options)
+    {
+        _httpClient = httpClient;
+        _settings   = options.Value;
+    }
+
+    public async Task<AnticipatedEndowmentResponse> InquiryAnticipatedEndowmentAsync(
+        string policyId,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(policyId))
+            throw new ArgumentException("PolicyID wajib diisi.", nameof(policyId));
+
+        var (polIdBase, polIdSfx) = SplitPolicyId(policyId);
+        var xmlRequest = BuildRequestXml(polIdBase, polIdSfx);
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, _settings.ServiceUrl);
+
+        // ✅ Fix 1: Content-Type harus text/xml untuk SOAP
+        request.Content = new StringContent(xmlRequest, Encoding.UTF8, "text/xml");
+        request.Content.Headers.ContentType!.CharSet = "utf-8";
+
+        // ✅ Fix 2: SOAPAction header wajib untuk SOAP endpoint
+        request.Headers.Add("SOAPAction", "\"\"");
+
+        using var response = await _httpClient.SendAsync(request, cancellationToken);
+
+        // ✅ Fix 3: baca body dulu sebelum throw agar error message informatif
+        var xmlResponse = await response.Content.ReadAsStringAsync(cancellationToken);
+
+        if (!response.IsSuccessStatusCode)
+            throw new HttpRequestException(
+                $"TXLife gagal [{(int)response.StatusCode}]: {xmlResponse}");
+
+        XNamespace ns = "http://ACORD.org/Standards/Life/2";
+        var doc = XDocument.Parse(xmlResponse);
+
+        var inquiry = doc.Descendants(ns + "InquiryAnticipatedEndowmentData").FirstOrDefault()
+                   ?? doc.Descendants()
+                         .FirstOrDefault(x => x.Name.LocalName == "InquiryAnticipatedEndowmentData");
+
+        if (inquiry == null)
+        {
+            return new AnticipatedEndowmentResponse
+            {
+                ContractualPayoutInfo = new ContractualPayoutInformation { PolicyID = policyId },
+                PayoutDates           = new List<PayoutDateInformation>(),
+                AEFundInfo            = new AEFundInformation { PolicyID = policyId }
+            };
+        }
+
+        var common  = inquiry.Elements().FirstOrDefault(x => x.Name.LocalName == "MirCommonFields");
+        var valuotr = inquiry.Elements().FirstOrDefault(x => x.Name.LocalName == "MirAeValueOT");
+        var valuln  = inquiry.Elements().FirstOrDefault(x => x.Name.LocalName == "MirAeValueLN");
+
+        var payoMethods = inquiry.Descendants()
+            .Where(x => x.Name.LocalName == "MirPayoMethod")
+            .Select(x => x.Value?.Trim())
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .Cast<string>()
+            .ToList();
+
+        var payoDates = inquiry.Descendants()
+            .Where(x => x.Name.LocalName == "MirPolPayoDt")
+            .Select(x => x.Value?.Trim())
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .Cast<string>()
+            .ToList();
+
+        string GetValue(XElement? parent, string localName)
+            => parent?.Elements()
+                      .FirstOrDefault(x => x.Name.LocalName == localName)
+                      ?.Value?.Trim() ?? string.Empty;
+
+        DateTime? ParseDate(string? value)
+        {
+            if (string.IsNullOrWhiteSpace(value)) return null;
+            string[] formats =
+            {
+                "yyyy-MM-dd", "yyyyMMdd", "dd/MM/yyyy",
+                "MM/dd/yyyy", "yyyy-MM-ddTHH:mm:ss",
+                "yyyy-MM-ddTHH:mm:ssZ", "yyyyMMddHHmmss"
+            };
+            if (DateTime.TryParseExact(value, formats,
+                CultureInfo.InvariantCulture, DateTimeStyles.None, out var exact))
+                return exact;
+            if (DateTime.TryParse(value, out var parsed))
+                return parsed;
+            return null;
+        }
+
+        decimal ParseDecimal(string? value)
+        {
+            if (string.IsNullOrWhiteSpace(value)) return 0m;
+            if (decimal.TryParse(value, NumberStyles.Any,
+                CultureInfo.InvariantCulture, out var inv)) return inv;
+            if (decimal.TryParse(value, NumberStyles.Any,
+                CultureInfo.CurrentCulture, out var cur)) return cur;
+            return 0m;
+        }
+
+        var contractual = new ContractualPayoutInformation
+        {
+            PolicyID          = policyId,
+            PayoutMethod      = payoMethods.FirstOrDefault() ?? string.Empty,
+            PayoutNumber      = int.TryParse(GetValue(common, "MirPolPayoNum"), out var pn) ? pn : 0,
+            NextPayoutDate    = ParseDate(GetValue(common, "MirPolPayoNxtDt")),
+            LastPayoutDate    = ParseDate(GetValue(common, "MirCdaEffDt")),
+            LastPayoutAmount  = ParseDecimal(GetValue(common, "MirLastPayoAmt")),
+            TotalPayoutAmount = ParseDecimal(GetValue(common, "MirPolPayoAmt")),
+            IssueDate         = ParseDate(GetValue(common, "MirPolPayoEffDt"))
+        };
+
+        var payoutDateList = payoDates
+            .Select((date, i) => new PayoutDateInformation
+            {
+                PolicyID       = policyId,
+                PayoutDate     = ParseDate(date),
+                PayoutAmount   = ParseDecimal(GetValue(common, "MirPolPayoAmt")),
+                PayoutStatus   = string.Empty,
+                SequenceNumber = i + 1
+            })
+            .ToList();
+
+        var aeFundInfo = new AEFundInformation
+        {
+            PolicyID             = policyId,
+            AEFund               = GetValue(valuotr, "MirPolAeAmt"),
+            AEFundInterest       = GetValue(valuotr, "MirPolAeIntAmt"),
+            LastWithdrawalDate   = ParseDate(GetValue(common, "MirLastAeWthdrDt")),
+            LoanBalance          = ParseDecimal(GetValue(valuln, "MirDvLoanRepayAmt")),
+            PlanName             = GetValue(common, "MirDvFndDescTxt"),
+            LastWithdrawalAmount = ParseDecimal(GetValue(common, "MirLastAeWthdrAmt"))
+        };
+
+        return new AnticipatedEndowmentResponse
+        {
+            ContractualPayoutInfo = contractual,
+            PayoutDates           = payoutDateList,
+            AEFundInfo            = aeFundInfo
+        };
+    }
+
+    private string BuildRequestXml(string polIdBase, string polIdSfx)
+    {
+        XNamespace ns  = "http://ACORD.org/Standards/Life/2";
+        XNamespace xsi = "http://www.w3.org/2001/XMLSchema-instance";
+        var now = DateTime.Now;
+
+        var xml = new XDocument(
+            new XElement(ns + "TXLife",
+                new XAttribute(XNamespace.Xmlns + "xsi", xsi),
+                new XAttribute(xsi + "schemaLocation",
+                    "http://ACORD.org/Standards/Life/2 ../xsd/TXLife2.9.00.xsd"),
+                new XElement(ns + "UserAuthRequest",
+                    new XElement(ns + "UserLoginName", _settings.Username),
+                    new XElement(ns + "UserPswd",
+                        new XElement(ns + "CryptType", "NONE"),
+                        new XElement(ns + "Pswd", _settings.Password)),
+                    new XElement(ns + "UserCoId", _settings.CompanyCode)),
+                new XElement(ns + "TXLifeRequest",
+                    new XElement(ns + "TransRefGUID", Guid.NewGuid().ToString()),
+                    new XElement(ns + "TransType",
+                        new XAttribute("tc", "InquiryAnticipatedEndowment")),
+                    new XElement(ns + "TransExeDate", now.ToString("yyyy-MM-dd")),
+                    new XElement(ns + "TransExeTime", now.ToString("HH:mm:ss")),
+                    new XElement(ns + "OLIFE",
+                        new XElement(ns + "InquiryAnticipatedEndowmentData",
+                            // ✅ Fix 4: MirDvBusFcnId dihapus
+                            new XElement(ns + "MirCommonFields",
+                                new XElement(ns + "MirDvEffDt", now.ToString("yyyy-MM-dd")),
+                                new XElement(ns + "MirCvgNum", "01"),
+                                new XElement(ns + "MirPolPayoNum", "00")),
+                            new XElement(ns + "MirPolId",
+                                new XElement(ns + "MirPolIdBase", polIdBase),
+                                new XElement(ns + "MirPolIdSfx", polIdSfx))
+                        )
+                    )
+                )
+            )
+        );
+
+        return xml.ToString();
+    }
+
+    private static (string polIdBase, string polIdSfx) SplitPolicyId(string policyId)
+    {
+        policyId = policyId.Trim();
+        if (policyId.Contains('-'))
+        {
+            var parts = policyId.Split('-', StringSplitOptions.RemoveEmptyEntries);
+            return (parts.ElementAtOrDefault(0) ?? string.Empty,
+                    parts.ElementAtOrDefault(1) ?? "00");
+        }
+        if (policyId.Length > 2)
+            return (policyId[..^2], policyId[^2..]);
+
+        return (policyId, "00");
+    }
+}
