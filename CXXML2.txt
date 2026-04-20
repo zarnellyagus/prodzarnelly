@@ -1,0 +1,216 @@
+using Microsoft.AspNetCore.Mvc;
+using SalesforceAPI.Models;
+using SalesforceAPI.Services;
+using System.Globalization;
+using System.Xml;
+using System.Xml.Linq;
+
+namespace SalesforceAPI.Controllers
+{
+    [Route("api/[controller]")]
+    [ApiController]
+    public class AnticipatedEndowmentController : ControllerBase
+    {
+        private readonly Requestsoap _requestsoap;
+
+        public AnticipatedEndowmentController(Requestsoap requestsoap)
+        {
+            _requestsoap = requestsoap;
+        }
+
+        [HttpPost]
+        public async Task<ActionResult<List<ContractualPayoutInformation>>> SendSoapRequestAsync([FromQuery] string policyId)
+        {
+            try
+            {
+                string datenow = DateTime.Today.ToString("ddMMMyyyy", CultureInfo.InvariantCulture).ToUpper();
+
+                string url = "http://10.154.5.45:8093/TXLife/services/TXLife";
+
+                XNamespace soapNs   = "http://schemas.xmlsoap.org/soap/envelope/";
+                XNamespace webNs    = "http://schema/webservices.elink.solcorp.com";
+                XNamespace acordNs  = "http://ACORD.org/Standards/Life/2";
+                XNamespace xsiNs    = "http://www.w3.org/2001/XMLSchema-instance";
+                XNamespace xsdNs    = "http://www.w3.org/2001/XMLSchema";
+
+                // ============================================================
+                // BUILD SOAP REQUEST - InquiryAnticipatedEndowment
+                // ============================================================
+                var xmlEndw = new XElement(soapNs + "Envelope",
+                    new XAttribute(XNamespace.Xmlns + "soapenv", soapNs),
+                    new XAttribute(XNamespace.Xmlns + "web", webNs),
+                    new XElement(soapNs + "Header"),
+                    new XElement(soapNs + "Body",
+                        new XElement(acordNs + "TXLife",
+                            new XAttribute(XNamespace.Xmlns + "xsi", xsiNs),
+                            new XAttribute(XNamespace.Xmlns + "xsd", xsdNs),
+                            new XAttribute(xsiNs + "schemaLocation",
+                                "http://ACORD.org/Standards/Life/2 ../xsd/TXLife2.9.00.xsd"),
+                            new XElement(acordNs + "UserAuthRequest",
+                                new XElement(acordNs + "UserLoginName", "f180w"),
+                                new XElement(acordNs + "UserPswd",
+                                    new XElement(acordNs + "CryptType", "NONE"),
+                                    new XElement(acordNs + "Pswd", "f180w")),
+                                new XElement(acordNs + "UserCoId", "CP")),
+                            new XElement(acordNs + "TXLifeRequest",
+                                new XElement(acordNs + "TransRefGUID", ""),
+                                new XElement(acordNs + "TransType",
+                                    new XAttribute("tc", "InquiryAnticipatedEndowment"), ""),
+                                new XElement(acordNs + "TransExeDate", datenow),
+                                new XElement(acordNs + "TransExeTime",
+                                    DateTime.Now.ToString("HH:mm:ss")),
+                                new XElement(acordNs + "OLiFE",
+                                    new XElement(acordNs + "InquiryAnticipatedEndowmentData",
+                                        new XElement(acordNs + "MirDvBusFcnId", ""),
+                                        new XElement(acordNs + "MirCommonFields",
+                                            new XElement(acordNs + "MirDvEffDt", datenow),
+                                            new XElement(acordNs + "MirCvgNum", "01"),
+                                            new XElement(acordNs + "MirPolPayoNum", "00001")),
+                                        new XElement(acordNs + "MirPolId",
+                                            new XElement(acordNs + "MirPolIdBase", policyId),
+                                            new XElement(acordNs + "MirPolIdSfx", ""))))))));
+
+                string xmlSoapEndw = xmlEndw.ToString();
+                string responseState = await _requestsoap.PostSOAPRequestAsync(url, xmlSoapEndw);
+
+                if (string.IsNullOrWhiteSpace(responseState))
+                    return StatusCode(502, "Empty response from SOAP service.");
+
+                // ============================================================
+                // PARSE RESPONSE
+                // ============================================================
+                string formattedXml = XDocument.Parse(responseState).ToString();
+
+                XmlDocument xmlDoc = new XmlDocument();
+                xmlDoc.LoadXml(formattedXml);
+
+                XmlNamespaceManager nsMgr = new XmlNamespaceManager(xmlDoc.NameTable);
+                nsMgr.AddNamespace("soap", "http://schemas.xmlsoap.org/soap/envelope/");
+                nsMgr.AddNamespace("ns", "http://ACORD.org/Standards/Life/2");
+
+                var results = new List<ContractualPayoutInformation>();
+
+                XmlNodeList? endowmentNodes = xmlDoc.SelectNodes(
+                    "//ns:InquiryAnticipatedEndowmentData", nsMgr);
+
+                if (endowmentNodes == null || endowmentNodes.Count == 0)
+                    return NotFound("No InquiryAnticipatedEndowmentData found in response.");
+
+                foreach (XmlNode node in endowmentNodes)
+                {
+                    string? payoutNumber      = node.SelectSingleNode("ns:MirCommonFields/ns:MirPolPayoNum", nsMgr)?.InnerText;
+                    string? nextPayoutDate    = node.SelectSingleNode("ns:MirCommonFields/ns:MirPolPayoNxtDt", nsMgr)?.InnerText;
+                    string? lastPayoutDate    = node.SelectSingleNode("ns:MirCommonFields/ns:MirCdaEffDt", nsMgr)?.InnerText;
+                    string? lastPayoutAmount  = node.SelectSingleNode("ns:MirCommonFields/ns:MirLastPayoAmt", nsMgr)?.InnerText;
+                    string? totPayoutAmount   = node.SelectSingleNode("ns:MirCommonFields/ns:MirPolPayoAmt", nsMgr)?.InnerText;
+                    string? issueDate         = node.SelectSingleNode("ns:MirCommonFields/ns:MirPolPayoEffDt", nsMgr)?.InnerText;
+                    string? payoutDate        = node.SelectSingleNode("ns:MirDvXpctPayoDtG/ns:MirDvXpctPayoDtT", nsMgr)?.InnerText;
+                    string? aeFund            = node.SelectSingleNode("ns:MirValuotrFields/ns:MirPolAeAmt", nsMgr)?.InnerText;
+                    string? aeFundInterest    = node.SelectSingleNode("ns:MirValuotrFields/ns:MirPolAeIntAmt", nsMgr)?.InnerText;
+                    string? loanBalance       = node.SelectSingleNode("ns:MirValulnFields/ns:MirDvLoanRepayAmt", nsMgr)?.InnerText;
+                    string? planName          = node.SelectSingleNode("ns:MirCommonFields/ns:MirDvFndDescTxt", nsMgr)?.InnerText;
+                    string? lastWithdrawAmt   = node.SelectSingleNode("ns:MirCommonFields/ns:MirLastAeWthdrAmt", nsMgr)?.InnerText;
+
+                    XmlNodeList? payMthdNodes = node.SelectNodes(
+                        "ns:MirCdiPayoMthdCdG/ns:MirCdiPayoMthdCdT", nsMgr);
+
+                    if (payMthdNodes == null || payMthdNodes.Count == 0)
+                    {
+                        // Tetap tambahkan data meski tidak ada payout method
+                        results.Add(MapToModel(
+                            "", payoutNumber, nextPayoutDate, lastPayoutDate,
+                            lastPayoutAmount, totPayoutAmount, issueDate, payoutDate,
+                            aeFund, aeFundInterest, loanBalance, planName, lastWithdrawAmt));
+                        continue;
+                    }
+
+                    foreach (XmlNode mthdNode in payMthdNodes)
+                    {
+                        string payoutMethod = mthdNode.InnerText;
+                        if (string.IsNullOrWhiteSpace(payoutMethod)) continue;
+
+                        results.Add(MapToModel(
+                            payoutMethod, payoutNumber, nextPayoutDate, lastPayoutDate,
+                            lastPayoutAmount, totPayoutAmount, issueDate, payoutDate,
+                            aeFund, aeFundInterest, loanBalance, planName, lastWithdrawAmt));
+                    }
+                }
+
+                return Ok(results);
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, $"Internal error: {ex.Message}");
+            }
+        }
+
+        // ============================================================
+        // HELPER - MAP RAW STRING TO MODEL
+        // ============================================================
+        private static ContractualPayoutInformation MapToModel(
+            string payoutMethod,
+            string? payoutNumber,
+            string? nextPayoutDate,
+            string? lastPayoutDate,
+            string? lastPayoutAmount,
+            string? totalPayoutAmount,
+            string? issueDate,
+            string? payoutDate,
+            string? aeFund,
+            string? aeFundInterest,
+            string? loanBalance,
+            string? planName,
+            string? lastWithdrawAmt)
+        {
+            static DateTime ParseDate(string? raw) =>
+                DateTime.TryParseExact(raw, "ddMMMyyyy",
+                    CultureInfo.InvariantCulture, DateTimeStyles.None, out var d)
+                ? d : DateTime.MinValue;
+
+            static decimal ParseDecimal(string? raw) =>
+                decimal.TryParse(raw, NumberStyles.Any,
+                    CultureInfo.InvariantCulture, out var v) ? v : 0;
+
+            return new ContractualPayoutInformation
+            {
+                PayoutMethod        = payoutMethod ?? "",
+                PayoutNumber        = payoutNumber ?? "",
+                NextPayoutDate      = ParseDate(nextPayoutDate),
+                LastPayoutDate      = ParseDate(lastPayoutDate),
+                LastPayoutAmount    = ParseDecimal(lastPayoutAmount),
+                TotalPayoutAmount   = ParseDecimal(totalPayoutAmount),
+                IssueDate           = ParseDate(issueDate),
+                PayoutDate          = ParseDate(payoutDate),
+                AEFund              = aeFund ?? "",
+                AEFundInterest      = aeFundInterest ?? "",
+                LoanBalance         = loanBalance ?? "",
+                PlanName            = planName ?? "",
+                LastWithdrawalAmount = ParseDecimal(lastWithdrawAmt),
+                LastWithdrawalDate  = DateTime.MinValue // tidak ada di response node
+            };
+        }
+    }
+}
+
+
+
+namespace SalesforceAPI.Models
+{
+    public class ContractualPayoutInformation
+    {
+        public string PayoutMethod { get; set; } = string.Empty;
+        public string PayoutNumber { get; set; } = string.Empty;
+        public DateTime NextPayoutDate { get; set; }
+        public DateTime LastPayoutDate { get; set; }
+        public decimal LastPayoutAmount { get; set; }
+        public decimal TotalPayoutAmount { get; set; }
+        public DateTime IssueDate { get; set; }
+        public DateTime PayoutDate { get; set; }
+        public string? AEFund { get; set; } = string.Empty;
+        public string? AEFundInterest { get; set; } = string.Empty;
+        public DateTime LastWithdrawalDate { get; set; }
+        public string? LoanBalance { get; set; } = string.Empty;
+        public string? PlanName { get; set; } = string.Empty;
+        public decimal LastWithdrawalAmount { get; set; }
+    }
+}
