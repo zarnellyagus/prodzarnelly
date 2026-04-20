@@ -1,0 +1,151 @@
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.VisualBasic;
+using SalesforceAPI.Models;
+using SalesforceAPI.Services;
+using System;
+using System.Globalization;
+using System.Text;
+using System.Xml;
+using System.Xml.Linq;
+using System.Collections.Generic;
+using System.Threading.Tasks;
+using System.Linq;
+
+namespace SalesforceAPI.Controllers
+{
+    [Route("api/[controller]")]
+    [ApiController]
+    public class AnticipatedEndowmentController : ControllerBase
+    {
+        private readonly Requestsoap _requestsoap;
+
+        public AnticipatedEndowmentController(Requestsoap requestsoap)
+        {
+            _requestsoap = requestsoap;
+        }
+
+        [HttpPost("inquiry")]
+        public async Task<ActionResult<ContractualPayoutInformation>> SendSoapRequestAsync([FromQuery] string Policyid)
+        {
+            if (string.IsNullOrEmpty(Policyid))
+                return BadRequest("Policyid is required.");
+
+            var resultcoverage = new ContractualPayoutInformation();
+            string datenow = DateTime.Today.ToString("ddMMMyyyy", CultureInfo.InvariantCulture).ToUpper(); // e.g., "20APR2026"
+            string url = "http://10.154.5.45:8093/TXLife/services/TXLife";
+
+            var soapNs = XNamespace.Get("http://schemas.xmlsoap.org/soap/envelope/");
+            var webNs = XNamespace.Get("http://schema/webservices.elink.solcorp.com");
+            var txLifeNs = XNamespace.Get("http://ACORD.org/Standards/Life/2");
+            var xsiNs = XNamespace.Get("http://www.w3.org/2001/XMLSchema-instance");
+            var xsdNs = XNamespace.Get("http://www.w3.org/2001/XMLSchema");
+            var schemaLoc = "http://ACORD.org/Standards/Life/2 ../xsd/TXLife2.9.00.xsd";
+
+            var xmlendw = new XElement(soapNs + "Envelope",
+                new XAttribute(XNamespace.Xmlns + "soapenv", soapNs),
+                new XAttribute(XNamespace.Xmlns + "web", webNs),
+                new XElement(soapNs + "Header"),
+                new XElement(soapNs + "Body",
+                    new XElement(txLifeNs + "TXLife",
+                        new XAttribute(XNamespace.Xmlns + "xsi", xsiNs),
+                        new XAttribute(XNamespace.Xmlns + "xsd", xsdNs),
+                        new XAttribute(XName.Get("schemaLocation", xsiNs), schemaLoc),
+                        new XElement(txLifeNs + "UserAuthRequest",
+                            new XElement(txLifeNs + "UserLoginName", "f180w"),
+                            new XElement(txLifeNs + "UserPswd",
+                                new XElement(txLifeNs + "CryptType", "NONE"),
+                                new XElement(txLifeNs + "Pswd", "f180w")),
+                            new XElement(txLifeNs + "UserCoId", "CP")),
+                        new XElement(txLifeNs + "TXLifeRequest",
+                            new XElement(txLifeNs + "TransRefGUID"),
+                            new XElement(txLifeNs + "TransType", new XAttribute("tc", "InquiryAnticipatedEndowment")),
+                            new XElement(txLifeNs + "TransExeDate"),
+                            new XElement(txLifeNs + "TransExeTime"),
+                            new XElement(txLifeNs + "OLIFE",
+                                new XElement(txLifeNs + "InquiryAnticipatedEndowmentData",
+                                    new XElement(txLifeNs + "MirDvBusFcnId"),
+                                    new XElement(txLifeNs + "MirCommonFields",
+                                        new XElement(txLifeNs + "MirDvEffDt", datenow),
+                                        new XElement(txLifeNs + "MirCvgNum", "01"),
+                                        new XElement(txLifeNs + "MirPolPayoNum", "00001")),
+                                    new XElement(txLifeNs + "MirPolid",
+                                        new XElement(txLifeNs + "MirPolIdBase", Policyid),
+                                        new XElement(txLifeNs + "MirPolIdSfx")))))));
+
+            string xmlSOAPedw = xmlendw.ToString(SaveOptions.DisableFormatting);
+
+            string responseState = await _requestsoap.PostSOAPRequestAsync(url, xmlSOAPedw); // Asumsi method ini async
+
+            if (string.IsNullOrEmpty(responseState))
+                return NotFound("No response from SOAP service.");
+
+            try
+            {
+                XmlDocument xmldoc = new XmlDocument();
+                xmldoc.LoadXml(responseState);
+                XmlNamespaceManager nsMgr = new XmlNamespaceManager(xmldoc.NameTable);
+                nsMgr.AddNamespace("soap", soapNs.ToString());
+                nsMgr.AddNamespace("ns", txLifeNs.ToString());
+
+                XmlNodeList endowmentNodes = xmldoc.SelectNodes("//ns:InquiryAnticipatedEndowmentData", nsMgr);
+                if (endowmentNodes.Count == 0)
+                    return NotFound("No endowment data found.");
+
+                var results = new List<ContractualPayoutInformation>();
+                foreach (XmlNode node in endowmentNodes)
+                {
+                    var info = new ContractualPayoutInformation
+                    {
+                        PayoutNumber = node.SelectSingleNode("ns:MirCommonFields/ns:MirPolPayoNum", nsMgr)?.InnerText ?? "",
+                        NextPayoutDate = ParseDate(node.SelectSingleNode("ns:MirCommonFields/ns:MirPolPayoNxtDt", nsMgr)?.InnerText),
+                        LastPayoutDate = ParseDate(node.SelectSingleNode("ns:MirCommonFields/ns:MirCdaEffDt", nsMgr)?.InnerText),
+                        LastPayoutAmount = ParseDecimal(node.SelectSingleNode("ns:MirCommonFields/ns:MirLastPayoAmt", nsMgr)?.InnerText),
+                        TotalPayoutAmount = ParseDecimal(node.SelectSingleNode("ns:MirCommonFields/ns:MirPolPayoAmt", nsMgr)?.InnerText),
+                        IssueDate = ParseDate(node.SelectSingleNode("ns:MirCommonFields/ns:MirPolPayoEffDt", nsMgr)?.InnerText),
+                        PayoutDate = ParseDate(node.SelectSingleNode("ns:MirDvXpctPayoDtG/ns:MirDvXpctPayoDtT", nsMgr)?.InnerText),
+                        AEFund = node.SelectSingleNode("ns:MirValuotrFields/ns:MirPolAeAmt", nsMgr)?.InnerText ?? "",
+                        AEFundInterest = node.SelectSingleNode("ns:MirValuotrFields/ns:MirPolAeIntAmt", nsMgr)?.InnerText ?? "",
+                        LoanBalance = node.SelectSingleNode("ns:MirValulnFields/ns:MirDvLoanRepayAmt", nsMgr)?.InnerText ?? "",
+                        PlanName = node.SelectSingleNode("ns:MirCommonFields/ns:MirDvFndDescTxt", nsMgr)?.InnerText ?? "",
+                        LastWithdrawalAmount = ParseDecimal(node.SelectSingleNode("ns:MirCommonFields/ns:MirLastAeWthdrAmt", nsMgr)?.InnerText)
+                        // PayoutMethod: ambil dari ns:MirCdiPayoMthdCdG/ns:MirCdiPayoMthdCdT jika ada
+                    };
+                    results.Add(info);
+                }
+
+                return Ok(results.FirstOrDefault() ?? new ContractualPayoutInformation());
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, $"XML parsing error: {ex.Message}");
+            }
+        }
+
+        private static DateTime ParseDate(string dateStr) => DateTime.TryParse(dateStr, out var dt) ? dt : default;
+        private static decimal ParseDecimal(string decStr) => decimal.TryParse(decStr, out var dec) ? dec : 0;
+    }
+}
+
+
+
+namespace SalesforceAPI.Models
+{
+    public class ContractualPayoutInformation
+    {
+        public string PayoutMethod { get; set; } = string.Empty;
+        public string PayoutNumber { get; set; } = string.Empty;
+        public DateTime NextPayoutDate { get; set; }
+        public DateTime LastPayoutDate { get; set; }
+        public decimal LastPayoutAmount { get; set; }
+        public decimal TotalPayoutAmount { get; set; }
+        public DateTime IssueDate { get; set; }
+        public DateTime PayoutDate { get; set; }
+        public string? AEFund { get; set; }
+        public string? AEFundInterest { get; set; }
+        public DateTime LastWithdrawalDate { get; set; }
+        public string? LoanBalance { get; set; }
+        public string? PlanName { get; set; }
+        public decimal LastWithdrawalAmount { get; set; }
+    }
+}
