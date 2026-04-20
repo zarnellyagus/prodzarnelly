@@ -1,0 +1,170 @@
+using Microsoft.AspNetCore.Mvc;
+using SalesforceAPI.Models;
+using SalesforceAPI.Services;
+using System.Globalization;
+using System.Xml;
+using System.Xml.Linq;
+
+namespace SalesforceAPI.Controllers
+{
+    [Route("api/[controller]")]
+    [ApiController]
+    public class AnticipatedEndowmentController : ControllerBase
+    {
+        private readonly Requestsoap _requestsoap;
+
+        public AnticipatedEndowmentController(Requestsoap requestsoap)
+        {
+            _requestsoap = requestsoap;
+        }
+
+        // ── Helper: safe decimal parse ───────────────────────────────
+        private static decimal ParseDecimal(string? val) =>
+            decimal.TryParse(val, NumberStyles.Any, CultureInfo.InvariantCulture, out var d) ? d : 0m;
+
+        [HttpPost]
+        public async Task<ActionResult<ContractualPayoutInformation>> SendSoapRequestAsync(string Policyid)
+        {
+            string url = "http://10.154.5.45:8093/TXLife/services/TXLife";
+
+            var soapNs   = XNamespace.Get("http://schemas.xmlsoap.org/soap/envelope/");
+            var TXLifeNs  = XNamespace.Get("http://schema/webservices.elink.solcorp.com");
+            var TXLifeNs1 = XNamespace.Get("http://ACORD.org/Standards/Life/2");
+            var TXLifeNs2 = XNamespace.Get("http://www.w3.org/2001/XMLSchema-instance");
+            var TXLifeNs3 = XNamespace.Get("http://www.w3.org/2001/XMLSchema");
+            var TXLifeNs4 = XNamespace.Get("http://ACORD.org/Standards/Life/2../xsd/TXLife2.9.00.xsd");
+
+            // ── Build XML Endowment ──────────────────────────────────
+            var xmlendw = new XElement(soapNs + "Envelope",
+                new XAttribute(XNamespace.Xmlns + "soapenv", soapNs),
+                new XAttribute(XNamespace.Xmlns + "web", TXLifeNs),
+                new XElement(soapNs + "Header"),
+                new XElement(soapNs + "Body",
+                    new XElement(TXLifeNs1 + "TXLife",
+                        new XAttribute(XNamespace.Xmlns + "xsi", TXLifeNs2),
+                        new XAttribute(XNamespace.Xmlns + "xsd", TXLifeNs3),
+                        new XElement(TXLifeNs1 + "SignOnCompany", "CP"),
+                        new XElement(TXLifeNs1 + "UserAuthRequest",
+                            new XElement(TXLifeNs1 + "UserLoginName", "fi80w"),
+                            new XElement(TXLifeNs1 + "UserPswd",
+                                new XElement(TXLifeNs1 + "CryptType", "NONE"),
+                                new XElement(TXLifeNs1 + "Pswd", "fi80w")),
+                            new XElement(TXLifeNs1 + "UserCoId", "CP")),
+                        new XElement("TXLifeRequest",
+                            new XElement("TransRefGUID", ""),
+                            new XElement("TransType", new XAttribute("tc", "InquiryAnticipatedEndowment"), ""),
+                            new XElement("TransExeDate", ""),
+                            new XElement("TransExeTime", ""),
+                            new XElement("OLiFE",
+                                new XElement("InquiryAnticipatedEndowmentData",
+                                    new XElement("MirCommonFields",
+                                        new XElement("MirDvEffDt", "16APR2026"),
+                                        new XElement("MirCvgNum", "01"),
+                                        new XElement("MirPolPayoNum", "00001")),
+                                    new XElement("MirPolId",
+                                        new XElement("MirPolIdBase", Policyid),
+                                        new XElement("MirPolIdSfx", ""))))))));
+
+            // ── Build XML CallCentre ─────────────────────────────────
+            var xml = new XElement(soapNs + "Envelope",
+                new XAttribute(XNamespace.Xmlns + "soapenv", soapNs),
+                new XAttribute(XNamespace.Xmlns + "web", TXLifeNs),
+                new XElement(soapNs + "Header"),
+                new XElement(soapNs + "Body",
+                    new XElement(TXLifeNs1 + "TXLife",
+                        new XAttribute(XNamespace.Xmlns + "xsi", TXLifeNs2),
+                        new XAttribute(XNamespace.Xmlns + "xsd", TXLifeNs3),
+                        new XElement(TXLifeNs1 + "SignOnCompany", "CP"),
+                        new XElement(TXLifeNs1 + "UserAuthRequest",
+                            new XElement(TXLifeNs1 + "UserLoginName", "fi80w"),
+                            new XElement(TXLifeNs1 + "UserPswd",
+                                new XElement(TXLifeNs1 + "CryptType", "NONE"),
+                                new XElement(TXLifeNs1 + "Pswd", "fi80w")),
+                            new XElement(TXLifeNs1 + "UserCoId", "CP")),
+                        new XElement("TXLifeRequest",
+                            new XElement("TransRefGUID", ""),
+                            new XElement("TransType", new XAttribute("tc", "CallCentreInquiry"), ""),
+                            new XElement("TransExeDate", ""),
+                            new XElement("TransExeTime", ""),
+                            new XElement("OLiFE",
+                                new XElement("CallCentreInquiryData",
+                                    new XElement("MirPolId",
+                                        new XElement("MirPolIdBase", Policyid),
+                                        new XElement("MirPolIdSfx", "")),
+                                    new XElement("MirCvgNum", ""),
+                                    new XElement("MirDvEffDt", "")))))));
+
+            // ── Fire BOTH requests PARALLEL ──────────────────────────
+            var task1 = _requestsoap.PostSOAPRequestAsync(url, xmlendw.ToString());
+            var task2 = _requestsoap.PostSOAPRequestAsync(url, xml.ToString());
+            await Task.WhenAll(task1, task2);
+
+            string responseState  = await task1;
+            string responseStatec = await task2;
+
+            // ── Parse XML Response ───────────────────────────────────
+            string formattedXml = XDocument.Parse(responseState).ToString();
+
+            try
+            {
+                var xmldoc = new XmlDocument();
+                xmldoc.LoadXml(formattedXml);
+
+                var msgr = new XmlNamespaceManager(xmldoc.NameTable);
+                msgr.AddNamespace("soap", "http://schemas.xmlsoap.org/soap/envelope/");
+                msgr.AddNamespace("ns",   "http://ACORD.org/Standards/Life/2");
+
+                var results = new List<object>();
+                XmlNodeList EndowmentNodes = xmldoc.SelectNodes("//ns:InquiryAnticipatedEndowmentData", msgr);
+
+                foreach (XmlNode node in EndowmentNodes)
+                {
+                    // ── String fields (tanggal & teks) ───────────────
+                    string payoutnumber   = node.SelectSingleNode("ns:MirCommonFields/ns:MirPolPayoNum",       msgr)?.InnerText;
+                    string nextpayoutdate = node.SelectSingleNode("ns:MirCommonFields/ns:MirPolPayoNxtDt",     msgr)?.InnerText;
+                    string lastpayoutdate = node.SelectSingleNode("ns:MirCommonFields/ns:MirCdaEffDt",         msgr)?.InnerText;
+                    string issueDate      = node.SelectSingleNode("ns:MirCommonFields/ns:MirPolPayoEffDt",     msgr)?.InnerText;
+                    string payoutdate     = node.SelectSingleNode("ns:MirDvXpctPayoDtG/ns:MirDvXpctPayoDtT",  msgr)?.InnerText;
+                    string planName       = node.SelectSingleNode("ns:MirCommonFields/ns:MirDvFndDescTxt",     msgr)?.InnerText;
+
+                    // ── Decimal fields (nominal/amount) ──────────────
+                    decimal lastpayamount        = ParseDecimal(node.SelectSingleNode("ns:MirCommonFields/ns:MirLastPayoAmt",    msgr)?.InnerText);
+                    decimal totpayamount         = ParseDecimal(node.SelectSingleNode("ns:MirCommonFields/ns:MirPolPayoAmt",     msgr)?.InnerText);
+                    decimal AEfund               = ParseDecimal(node.SelectSingleNode("ns:MirValuotrFields/ns:MirPolAeAmt",      msgr)?.InnerText);
+                    decimal AEFundI              = ParseDecimal(node.SelectSingleNode("ns:MirValuotrFields/ns:MirPolAeIntAmt",   msgr)?.InnerText);
+                    decimal loanbalance          = ParseDecimal(node.SelectSingleNode("ns:MirValulnFields/ns:MirDvLoanRepayAmt", msgr)?.InnerText);
+                    decimal lastwithdrawalamount = ParseDecimal(node.SelectSingleNode("ns:MirCommonFields/ns:MirLastAeWthdrAmt", msgr)?.InnerText);
+
+                    XmlNodeList paymthd = node.SelectNodes("ns:MirCdiPayoMthdCdG/ns:MirCdiPayonthdCdT", msgr);
+                    foreach (XmlNode p in paymthd)
+                    {
+                        if (!string.IsNullOrEmpty(p.InnerText))
+                        {
+                            results.Add(new
+                            {
+                                PayoutNumber         = payoutnumber,
+                                NextPayoutDate       = nextpayoutdate,
+                                LastPayoutDate       = lastpayoutdate,
+                                IssueDate            = issueDate,
+                                PayoutDate           = payoutdate,
+                                PlanName             = planName,
+                                LastPayoutAmount     = lastpayamount,        // decimal
+                                TotalPayoutAmount    = totpayamount,         // decimal
+                                AEFund               = AEfund,               // decimal
+                                AEFundInterest       = AEFundI,              // decimal
+                                LoanBalance          = loanbalance,          // decimal
+                                LastWithdrawalAmount = lastwithdrawalamount  // decimal
+                            });
+                        }
+                    }
+                }
+
+                return new JsonResult(new { ContractualPayoutInformation = results });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, $"Error: {ex.Message}");
+            }
+        }
+    }
+}
