@@ -1,0 +1,181 @@
+using Microsoft.AspNetCore.Mvc;
+using SalesforceAPI.Models;
+using SalesforceAPI.Services;
+using System.Globalization;
+using System.Text.Json;
+using System.Xml;
+using System.Xml.Linq;
+
+namespace SalesforceAPI.Controllers
+{
+    [Route("api/[controller]")]
+    [ApiController]
+    public class AnticipatedEndowmentController : ControllerBase
+    {
+        private readonly Requestsoap _requestsoap;
+
+        public AnticipatedEndowmentController(Requestsoap requestsoap)
+        {
+            _requestsoap = requestsoap;
+        }
+
+        [HttpPost]
+        public ActionResult<List<ContractualPayoutInformation>> SendSoapRequestAsync([FromQuery] string Policyid)
+        {
+            string url = "http://10.154.5.45:8093/TXLife/services/TXLife";
+
+            var soapNs   = XNamespace.Get("http://schemas.xmlsoap.org/soap/envelope/");
+            var TXLifeNs = XNamespace.Get("http://schema/webservices.elink.solcorp.com");
+            var ns1      = XNamespace.Get("http://ACORD.org/Standards/Life/2");
+            var xsiNs    = XNamespace.Get("http://www.w3.org/2001/XMLSchema-instance");
+            var xsdNs    = XNamespace.Get("http://www.w3.org/2001/XMLSchema");
+
+            // ─── REQUEST 1: InquiryAnticipatedEndowment ───────────────────────
+            var xmlEndw = new XElement(soapNs + "Envelope",
+                new XAttribute(XNamespace.Xmlns + "soapenv", soapNs),
+                new XAttribute(XNamespace.Xmlns + "web", TXLifeNs),
+                new XElement(soapNs + "Header"),
+                new XElement(soapNs + "Body",
+                    new XElement(ns1 + "TXLife",
+                        new XAttribute(XNamespace.Xmlns + "xsi", xsiNs),
+                        new XAttribute(XNamespace.Xmlns + "xsd", xsdNs),
+                        new XElement(ns1 + "SignOnCompany", "CP"),
+                        new XElement(ns1 + "UserAuthRequest",
+                            new XElement(ns1 + "UserLoginName", "fi80w"),
+                            new XElement(ns1 + "UserPswd",
+                                new XElement(ns1 + "CryptType", "NONE"),
+                                new XElement(ns1 + "Pswd", "fi80w")),
+                            new XElement(ns1 + "UserCoId", "CP")),
+                        new XElement("TXLifeRequest",
+                            new XElement("TransRefGUID", ""),
+                            new XElement("TransType", new XAttribute("tc", "InquiryAnticipatedEndowment"), ""),
+                            new XElement("TransExeDate", ""),
+                            new XElement("TransExeTime", ""),
+                            new XElement("OLiFE",
+                                new XElement("InquiryAnticipatedEndowmentData",
+                                    new XElement("MirCommonFields",
+                                        new XElement("MirDvEffDt", "16APR2026"),
+                                        new XElement("MirCvgNum", "01"),
+                                        new XElement("MirPolPayoNum", "00001")),
+                                    new XElement("MirPolId",
+                                        new XElement("MirPolIdBase", Policyid),
+                                        new XElement("MirPolIdSfx", ""))))))));
+
+            string responseState = _requestsoap.PostSOAPRequestAsync(url, xmlEndw.ToString());
+
+            // ─── REQUEST 2: CallCentreInquiry ─────────────────────────────────
+            var xmlCci = new XElement(soapNs + "Envelope",
+                new XAttribute(XNamespace.Xmlns + "soapenv", soapNs),
+                new XAttribute(XNamespace.Xmlns + "web", TXLifeNs),
+                new XElement(soapNs + "Header"),
+                new XElement(soapNs + "Body",
+                    new XElement(ns1 + "TXLife",
+                        new XAttribute(XNamespace.Xmlns + "xsi", xsiNs),
+                        new XAttribute(XNamespace.Xmlns + "xsd", xsdNs),
+                        new XElement(ns1 + "SignOnCompany", "CP"),
+                        new XElement(ns1 + "UserAuthRequest",
+                            new XElement(ns1 + "UserLoginName", "fi80w"),
+                            new XElement(ns1 + "UserPswd",
+                                new XElement(ns1 + "CryptType", "NONE"),
+                                new XElement(ns1 + "Pswd", "fi80w")),
+                            new XElement(ns1 + "UserCoId", "CP")),
+                        new XElement("TXLifeRequest",
+                            new XElement("TransRefGUID", ""),
+                            new XElement("TransType", new XAttribute("tc", "CallCentreInquiry"), ""),
+                            new XElement("TransExeDate", ""),
+                            new XElement("TransExeTime", ""),
+                            new XElement("OLiFE",
+                                new XElement("CallCentreInquiryData",
+                                    new XElement("MirPolId",
+                                        new XElement("MirPolIdBase", Policyid),
+                                        new XElement("MirPolIdSfx", "")),
+                                    new XElement("MirCvgNum", ""),
+                                    new XElement("MirDvEffDt", "")))))));
+
+            string responseStatec = _requestsoap.PostSOAPRequestAsync(url, xmlCci.ToString());
+
+            // ─── PARSE XML RESPONSE → JSON ────────────────────────────────────
+            try
+            {
+                string formattedXml = XDocument.Parse(responseState).ToString();
+
+                XmlDocument xmldoc = new XmlDocument();
+                xmldoc.LoadXml(formattedXml);
+
+                XmlNamespaceManager mgr = new XmlNamespaceManager(xmldoc.NameTable);
+                mgr.AddNamespace("soap", "http://schemas.xmlsoap.org/soap/envelope/");
+                mgr.AddNamespace("ns",   "http://ACORD.org/Standards/Life/2");
+
+                var results = new List<ContractualPayoutInformation>();
+
+                XmlNodeList endowmentNodes = xmldoc.SelectNodes("//ns:InquiryAnticipatedEndowmentData", mgr);
+
+                foreach (XmlNode node in endowmentNodes)
+                {
+                    string payoutnumber     = node.SelectSingleNode("ns:MirCommonFields/ns:MirPolPayoNum",    mgr)?.InnerText ?? "";
+                    string nextpayoutdate   = node.SelectSingleNode("ns:MirCommonFields/ns:MirPolPayoNxtDt",  mgr)?.InnerText ?? "";
+                    string lastpayoutdate   = node.SelectSingleNode("ns:MirCommonFields/ns:MirCdaEffDt",      mgr)?.InnerText ?? "";
+                    string lastpayamount    = node.SelectSingleNode("ns:MirCommonFields/ns:MirLastPayoAmt",   mgr)?.InnerText ?? "0";
+                    string totpayamount     = node.SelectSingleNode("ns:MirCommonFields/ns:MirPolPayoAmt",    mgr)?.InnerText ?? "0";
+                    string issueDate        = node.SelectSingleNode("ns:MirCommonFields/ns:MirPolPayoEffDt",  mgr)?.InnerText ?? "";
+                    string payoutdate       = node.SelectSingleNode("ns:MirDvXpctPayoDtG/ns:MirDvXpctPayoDtT", mgr)?.InnerText ?? "";
+                    string AEfund           = node.SelectSingleNode("ns:MirValuotrFields/ns:MirPolAeAmt",     mgr)?.InnerText;
+                    string AEFundI          = node.SelectSingleNode("ns:MirValuotrFields/ns:MirPolAeIntAmt",  mgr)?.InnerText;
+                    string loanbalance      = node.SelectSingleNode("ns:MirValulnFields/ns:MirDvLoanRepayAmt", mgr)?.InnerText;
+                    string planName         = node.SelectSingleNode("ns:MirCommonFields/ns:MirDvFndDescTxt",  mgr)?.InnerText;
+                    string lastwithdrawal   = node.SelectSingleNode("ns:MirCommonFields/ns:MirLastAeWthdrAmt", mgr)?.InnerText ?? "0";
+
+                    XmlNodeList paymthd = node.SelectNodes("ns:MirCdiPayoMthdCdG/ns:MirCdiPayoMthdCdT", mgr);
+
+                    foreach (XmlNode pmNode in paymthd)
+                    {
+                        string payMethod = pmNode.InnerText;
+                        if (!string.IsNullOrEmpty(payMethod))
+                        {
+                            results.Add(new ContractualPayoutInformation
+                            {
+                                PayoutMethod        = payMethod,
+                                PayoutNumber        = payoutnumber,
+                                NextPayoutDate      = ParseDate(nextpayoutdate),
+                                LastPayoutDate      = ParseDate(lastpayoutdate),
+                                LastPayoutAmount    = ParseDecimal(lastpayamount),
+                                TotalPayoutAmount   = ParseDecimal(totpayamount),
+                                IssueDate           = ParseDate(issueDate),
+                                PayoutDate          = ParseDate(payoutdate),
+                                AEFund              = AEfund,
+                                AEFundInterest      = AEFundI,
+                                LoanBalance         = loanbalance,
+                                PlanName            = planName,
+                                LastWithdrawalAmount = ParseDecimal(lastwithdrawal)
+                            });
+                        }
+                    }
+                }
+
+                return Ok(results); // → Menghasilkan JSON array
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new { error = ex.Message, rawResponse = responseState });
+            }
+        }
+
+        // ─── HELPER ───────────────────────────────────────────────────────────
+        private static DateTime ParseDate(string? value)
+        {
+            if (string.IsNullOrWhiteSpace(value)) return DateTime.MinValue;
+            // Format ACORD: "16APR2026" atau standar ISO
+            if (DateTime.TryParseExact(value, "ddMMMyyyy",
+                CultureInfo.InvariantCulture, DateTimeStyles.None, out var dt)) return dt;
+            if (DateTime.TryParse(value, out var dt2)) return dt2;
+            return DateTime.MinValue;
+        }
+
+        private static decimal ParseDecimal(string? value)
+        {
+            if (string.IsNullOrWhiteSpace(value)) return 0;
+            return decimal.TryParse(value, NumberStyles.Any,
+                CultureInfo.InvariantCulture, out var d) ? d : 0;
+        }
+    }
+}
