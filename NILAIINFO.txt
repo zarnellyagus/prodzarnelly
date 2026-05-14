@@ -1,0 +1,496 @@
+using Microsoft.AspNetCore.Mvc;
+using Salesforce_API.Models;
+using Salesforce_API.Service;
+
+using System.Globalization;
+using System.Xml;
+using System.Xml.Linq;
+
+namespace Salesforce_API.Controllers
+{
+    [Route("api/[controller]")]
+    [ApiController]
+    public class ValueInformationController : ControllerBase
+    {
+        private readonly Requestsoap _requestsoap;
+
+        public ValueInformationController(Requestsoap requestsoap)
+        {
+            _requestsoap = requestsoap;
+        }
+
+        [HttpPost]
+        [ProducesResponseType(typeof(ApiSuccessResponse<ValueInformationResponse>), StatusCodes.Status200OK)]
+        [ProducesResponseType(typeof(ApiErrorResponse), StatusCodes.Status400BadRequest)]
+        [ProducesResponseType(typeof(ApiErrorResponse), StatusCodes.Status404NotFound)]
+        [ProducesResponseType(typeof(ApiErrorResponse), StatusCodes.Status500InternalServerError)]
+        public async Task<ActionResult<ApiSuccessResponse<ValueInformationResponse>>> SendSoapRequestAsync(
+            [FromBody] ValueInformationRequest request)
+        {
+            // ============================================================
+            // VALIDASI REQUEST
+            // ============================================================
+            if (request == null || string.IsNullOrWhiteSpace(request.PolicyId))
+                return BadRequest(new ApiErrorResponse
+                {
+                    StatusCode = 400,
+                    Message = "Bad Request",
+                    Detail = "PolicyId tidak boleh kosong.",
+                    Timestamp = DateTime.Now
+                });
+
+            string policyId = request.PolicyId.Trim();
+            string datenow = DateTime.Today
+                                .ToString("ddMMMyyyy", CultureInfo.InvariantCulture)
+                                .ToUpper();
+
+            // ============================================================
+            // NAMESPACE & URL — SESUAI SISTEM SOAP
+            // ============================================================
+            string url = "http://10.154.5.45:8093/TXLife/services/TXLife";
+
+            var soapNs = XNamespace.Get("http://schemas.xmlsoap.org/soap/envelope/");
+            var TXLifeNs = XNamespace.Get("http://schema/webservices.elink.solcorp.com");
+            var TXLifeNs1 = XNamespace.Get("http://ACORD.org/Standards/Life/2");
+            var TXLifeNs2 = XNamespace.Get("http://www.w3.org/2001/XMLSchema-instance");
+            var TXLifeNs3 = XNamespace.Get("http://www.w3.org/2001/XMLSchema");
+            var TXLifeNs4 = XNamespace.Get("http://ACORD.org/Standards/Life/2../xsd/TXLife2.9.00.xsd");
+
+            try
+            {
+                // ============================================================
+                // HELPER — Build SOAP Envelope
+                // ============================================================
+                XElement BuildEnvelope(string transType, string olifeTag, XElement bodyContent) =>
+                    new XElement(soapNs + "Envelope",
+                        new XAttribute(XNamespace.Xmlns + "soapenv", soapNs),
+                        new XAttribute(XNamespace.Xmlns + "web", TXLifeNs),
+                        new XElement(soapNs + "Header"),
+                        new XElement(soapNs + "Body",
+                            new XElement(TXLifeNs1 + "TXLife",
+                                new XAttribute(XNamespace.Xmlns + "xsi", TXLifeNs2),
+                                new XAttribute(XNamespace.Xmlns + "xsd", TXLifeNs3),
+                                new XAttribute(XNamespace.Xmlns + "schemaLocation", TXLifeNs4),
+                                new XElement(TXLifeNs1 + "SignOnCompany", "CP"),
+                                new XElement(TXLifeNs1 + "UserAuthRequest",
+                                    new XElement(TXLifeNs1 + "UserLoginName", "fi80w"),
+                                    new XElement(TXLifeNs1 + "UserPswd",
+                                        new XElement(TXLifeNs1 + "CryptType", "NONE"),
+                                        new XElement(TXLifeNs1 + "Pswd", "fi80w")),
+                                    new XElement(TXLifeNs1 + "UserCoId", "CP")),
+                                new XElement(TXLifeNs1 + "TXLifeRequest",
+                                    new XElement(TXLifeNs1 + "TransRefGUID", ""),
+                                    new XElement(TXLifeNs1 + "TransType",
+                                        new XAttribute("tc", transType), ""),
+                                    new XElement(TXLifeNs1 + "TransExeDate", datenow),
+                                    new XElement(TXLifeNs1 + "TransExeTime",
+                                        DateTime.Now.ToString("HH:mm:ss")),
+                                    new XElement(TXLifeNs1 + olifeTag, bodyContent)))));
+
+                // ============================================================
+                // 1. BUILD — InquiryFundValues
+                // ============================================================
+                var xmlFV = BuildEnvelope("InquiryFundValues", "OLiFE",
+                    new XElement(TXLifeNs1 + "InquiryFundValuesData",
+                        new XElement(TXLifeNs1 + "MirPolIdBase", policyId)));
+
+                // ============================================================
+                // 2. BUILD — InquiryPolicyValues
+                // ============================================================
+                var xmlPV = BuildEnvelope("InquiryPolicyValues", "OLiFE",
+                    new XElement(TXLifeNs1 + "InquiryPolicyValuesData",
+                        new XElement(TXLifeNs1 + "MirCommonFields",
+                            new XElement(TXLifeNs1 + "MirDvEffDt", ""),
+                            new XElement(TXLifeNs1 + "MirPolId",
+                                new XElement(TXLifeNs1 + "MirPolIdBase", policyId),
+                                new XElement(TXLifeNs1 + "MirPolIdSfx", "")))));
+
+                // ============================================================
+                // 3. BUILD — InquirySummary
+                // ============================================================
+                var xmlSMR = BuildEnvelope("InquirySummary", "OLiFE",
+                    new XElement(TXLifeNs1 + "InquirySummaryData",
+                        new XElement(TXLifeNs1 + "MirCommonFields",
+                            new XElement(TXLifeNs1 + "MirDvEffDt", datenow),
+                            new XElement(TXLifeNs1 + "MirPolId",
+                                new XElement(TXLifeNs1 + "MirPolIdBase", policyId),
+                                new XElement(TXLifeNs1 + "MirPolIdSfx", "")),
+                            new XElement(TXLifeNs1 + "MirCvgNum", ""))));
+
+                // ============================================================
+                // 4. BUILD — FundInquiryAccumulationUnits
+                // ============================================================
+                var xmlFA = BuildEnvelope("FundInquiryAccumulationUnits", "OLIFEC",
+                    new XElement(TXLifeNs1 + "FundInquiryAccumulationUnitsData",
+                        new XElement(TXLifeNs1 + "MirPolId",
+                            new XElement(TXLifeNs1 + "MirCvgNum", "01"),
+                            new XElement(TXLifeNs1 + "MirPolIdBase", policyId),
+                            new XElement(TXLifeNs1 + "MirPolIdSfx", ""),
+                            new XElement(TXLifeNs1 + "MirCiaEffDt", datenow),
+                            new XElement(TXLifeNs1 + "MirCiaSeqNum", "999"),
+                            new XElement(TXLifeNs1 + "MirCiaTypCd", ""))));
+
+                // ============================================================
+                // 5. BUILD — FundInquiryActivity
+                // ============================================================
+                var xmlFVL = BuildEnvelope("FundInquiryActivity", "OLife",
+                    new XElement(TXLifeNs1 + "FundInquiryActivityData",
+                        new XElement(TXLifeNs1 + "MirPolId",
+                            new XElement(TXLifeNs1 + "MirCvgNum", "01"),
+                            new XElement(TXLifeNs1 + "MirPolIdBase", policyId),
+                            new XElement(TXLifeNs1 + "MirPolIdSfx", ""),
+                            new XElement(TXLifeNs1 + "MirCiaEffDt", datenow),
+                            new XElement(TXLifeNs1 + "MirCiaSeqNum", "999"),
+                            new XElement(TXLifeNs1 + "MirCiaTypCd", ""))));
+
+                // ============================================================
+                // KIRIM SEMUA PARALEL
+                // ============================================================
+                string[] responses = await Task.WhenAll(
+                    _requestsoap.PostSOAPRequestAsync(url, xmlFV.ToString()),
+                    _requestsoap.PostSOAPRequestAsync(url, xmlPV.ToString()),
+                    _requestsoap.PostSOAPRequestAsync(url, xmlSMR.ToString()),
+                    _requestsoap.PostSOAPRequestAsync(url, xmlFA.ToString()),
+                    _requestsoap.PostSOAPRequestAsync(url, xmlFVL.ToString())
+                );
+
+                string responseStateFV = responses[0];
+                string responseStatePV = responses[1];
+                string responseStateSMR = responses[2];
+                string responseStateFA = responses[3];
+                string responseStateFVL = responses[4];
+
+                // ============================================================
+                // VALIDASI — jika ada response kosong → empty data
+                // ============================================================
+                bool anyEmpty = string.IsNullOrWhiteSpace(responseStateFV)
+                             || string.IsNullOrWhiteSpace(responseStatePV)
+                             || string.IsNullOrWhiteSpace(responseStateSMR)
+                             || string.IsNullOrWhiteSpace(responseStateFA)
+                             || string.IsNullOrWhiteSpace(responseStateFVL);
+
+                if (anyEmpty)
+                    return Ok(BuildEmptySuccessResponse(policyId));
+
+                // ============================================================
+                // HELPER — Parse XML ke XmlDocument + Namespace Manager
+                // ============================================================
+                (XmlDocument doc, XmlNamespaceManager ns) ParseXml(string raw)
+                {
+                    var doc = new XmlDocument();
+                    doc.LoadXml(XDocument.Parse(raw).ToString());
+                    var ns = new XmlNamespaceManager(doc.NameTable);
+                    ns.AddNamespace("soap", "http://schemas.xmlsoap.org/soap/envelope/");
+                    ns.AddNamespace("ns", "http://ACORD.org/Standards/Life/2");
+                    return (doc, ns);
+                }
+
+                // ============================================================
+                // PARSE — InquiryFundValues
+                // ============================================================
+                string bcash = "", bcsv = "";
+                string MCV = "", SCharge = "", CSurrenderValue = "";
+
+                var (docFV, nsFV) = ParseXml(responseStateFV);
+                XmlNodeList? nodesFV = docFV.SelectNodes("//ns:InquiryFundValuesData", nsFV);
+                if (nodesFV != null)
+                {
+                    foreach (XmlNode node in nodesFV)
+                    {
+                        MCV = node.SelectSingleNode("ns:MirDvMcvAcumAmt", nsFV)?.InnerText ?? "";
+                        SCharge = node.SelectSingleNode("ns:MirDvSurrChrgAnt", nsFV)?.InnerText ?? "";
+                        CSurrenderValue = node.SelectSingleNode("ns:MirDvPolCsvAmt", nsFV)?.InnerText ?? "";
+                        bcash = node.SelectSingleNode("ns:MirDvPolBaseCvAnt", nsFV)?.InnerText ?? "";
+                        bcsv = node.SelectSingleNode("ns:MirDvPolCsvAmt", nsFV)?.InnerText ?? "";
+                    }
+                }
+
+                // ============================================================
+                // PARSE — InquirySummary
+                // ============================================================
+                string PSuspense = "", MSuspense = "", MLoanAmountAvailable = "";
+
+                var (docSMR, nsSMR) = ParseXml(responseStateSMR);
+                XmlNodeList? nodesSMR = docSMR.SelectNodes("//ns:InquirySummaryData", nsSMR);
+                if (nodesSMR != null)
+                {
+                    foreach (XmlNode node in nodesSMR)
+                    {
+                        PSuspense = node.SelectSingleNode("ns:MirCommonFields/ns:MirPolPremSuspAmt", nsSMR)?.InnerText ?? "";
+                        MSuspense = node.SelectSingleNode("ns:MirCommonFields/ns:MirPolMiscSuspAmt", nsSMR)?.InnerText ?? "";
+                        MLoanAmountAvailable = node.SelectSingleNode("ns:MirCommonFields/ns:MirDvMaxLoanAmt", nsSMR)?.InnerText ?? "";
+                    }
+                }
+
+                // ============================================================
+                // PARSE — InquiryPolicyValues
+                // ============================================================
+                string PaidupAdditionsCaseValuev = "";
+                string DividendVCVonDepositv = "";
+                string DividendVCVonDepositInterestv = "";
+                string TerminalBonusforSurrenderv = "";
+                string Totalbonusv = "";
+                string UnearnedPremiumv = "";
+                string ReturnofPremiumAmountv = "";
+                string CashValueofAccumulatedRevisionaryv = "";
+                string OutstandingDisbursementsv = "";
+                string LoanAmountv = "";
+                string LoanInterestPaidCapitalizedYTDv = "";
+                string APLAmountv = "";
+                string APLInterestPaidCapitalizedYTDv = "";
+
+                var (docPV, nsPV) = ParseXml(responseStatePV);
+                XmlNodeList? nodesPV = docPV.SelectNodes("//ns:InquiryPolicyValuesData", nsPV);
+                if (nodesPV != null)
+                {
+                    foreach (XmlNode node in nodesPV)
+                    {
+                        PaidupAdditionsCaseValuev = node.SelectSingleNode("ns:MirValupolFields/ns:MirDvValuPuaAmt", nsPV)?.InnerText ?? "";
+                        DividendVCVonDepositv = node.SelectSingleNode("ns:MirValupolFields/ns:MirPolDodAcumAmt", nsPV)?.InnerText ?? "";
+                        DividendVCVonDepositInterestv = node.SelectSingleNode("ns:MirValupolFields/ns:MirDodCrntIntAmt", nsPV)?.InnerText ?? "";
+                        TerminalBonusforSurrenderv = node.SelectSingleNode("ns:MirValupolFields/ns:MirDvPolSurrAmt", nsPV)?.InnerText ?? "";
+                        Totalbonusv = node.SelectSingleNode("ns:MirValupolFields/ns:MirDvPolBonCshAmt", nsPV)?.InnerText ?? "";
+                        UnearnedPremiumv = node.SelectSingleNode("ns:MirValupolFields/ns:MirDvPremRfndAmt", nsPV)?.InnerText ?? "";
+                        ReturnofPremiumAmountv = node.SelectSingleNode("ns:MirValupolFields/ns:MirDvRopAmt", nsPV)?.InnerText ?? "";
+                        CashValueofAccumulatedRevisionaryv = node.SelectSingleNode("ns:MirValupolFields/ns:MirCvRbAcumAmt", nsPV)?.InnerText ?? "";
+                        OutstandingDisbursementsv = node.SelectSingleNode("ns:MirValupolFields/ns:MirPolOsDisbAmt", nsPV)?.InnerText ?? "";
+                        LoanAmountv = node.SelectSingleNode("ns:MirValupolFields/ns:MirDvLoanAmt", nsPV)?.InnerText ?? "";
+                        LoanInterestPaidCapitalizedYTDv = node.SelectSingleNode("ns:MirValupolFields/ns:MirDvLoanIntYtdAmt", nsPV)?.InnerText ?? "";
+                        APLAmountv = node.SelectSingleNode("ns:MirValupolFields/ns:MirDvAplLoanAmt", nsPV)?.InnerText ?? "";
+                        APLInterestPaidCapitalizedYTDv = node.SelectSingleNode("ns:MirValupolFields/ns:MirDvAplIntYtdAmt", nsPV)?.InnerText ?? "";
+                    }
+                }
+
+                // ============================================================
+                // PARSE — FundInquiryAccumulationUnits
+                // ============================================================
+                var fundInfoList = new List<FundInformation>();
+
+                var (docFA, nsFA) = ParseXml(responseStateFA);
+                XmlNodeList? nodesFA = docFA.SelectNodes("//ns:FundInquiryAccumulationUnitsData", nsFA);
+                if (nodesFA != null)
+                {
+                    foreach (XmlNode node in nodesFA)
+                    {
+                        XmlNodeList? fundfa = node.SelectNodes("ns:MirFndIdG/ns:MirFndIdT", nsFA);
+                        XmlNodeList? unitpricefa = node.SelectNodes("ns:MirFiaAunitPricAmtG/ns:MirFiaAunitPricAntT", nsFA);
+                        XmlNodeList? numberofunitfa = node.SelectNodes("ns:MirCfnIntgAunitQtyG/ns:MirCfnIntgAunitQtyT", nsFA);
+                        XmlNodeList? persen = node.SelectNodes("ns:MirFndPercentageG/ns:MirFndPercentageT", nsFA);
+
+                        if (fundfa == null || unitpricefa == null) continue;
+
+                        int count = Math.Min(fundfa.Count, unitpricefa.Count);
+                        for (int i = 0; i < count; i++)
+                        {
+                            string fundCode = fundfa[i]?.InnerText ?? "";
+                            if (fundCode == "*" || string.IsNullOrWhiteSpace(fundCode)) continue;
+
+                            fundInfoList.Add(new FundInformation
+                            {
+                                Fund = fundCode,
+                                UnitPrice = ParseDecimal(unitpricefa[i]?.InnerText),
+                                ApproximateNumberofUnits = ParseDecimal(numberofunitfa?[i]?.InnerText),
+                                BaseCashValue = ParseDecimal(bcash),
+                                CashSurrenderValue = ParseDecimal(bcsv),
+                                FundPercentage = ParseDecimal(persen?[i]?.InnerText)
+                            });
+                        }
+                    }
+                }
+
+                // ============================================================
+                // PARSE — FundInquiryActivity
+                // ============================================================
+                var fundActivityList = new List<FundActivityInformation>();
+
+                var (docFVL, nsFVL) = ParseXml(responseStateFVL);
+                XmlNodeList? nodesFVL = docFVL.SelectNodes("//ns:FundInquiryActivityData", nsFVL);
+                if (nodesFVL != null)
+                {
+                    foreach (XmlNode node in nodesFVL)
+                    {
+                        XmlNodeList? actefdatefvl = node.SelectNodes("ns:MirCiaEffDtG/ns:MirCiaEffDtT", nsFVL);
+                        XmlNodeList? seqnumberfvl = node.SelectNodes("ns:MirCiaSeqNumG/ns:MirCiaSeqNumT", nsFVL);
+                        XmlNodeList? actvtypfvl = node.SelectNodes("ns:MirCiaTypCdG/ns:MirCiaTypCdT", nsFVL);
+                        XmlNodeList? topprmfvl = node.SelectNodes("ns:MirCiaCliTrxnAmtG/ns:MirCiaCliTrxnAmtT", nsFVL);
+                        XmlNodeList? netamtfvl = node.SelectNodes("ns:MirCiaFndTrxnAmtG/ns:MirCiaFndTrxnAmtT", nsFVL);
+                        XmlNodeList? tranchrgfvl = node.SelectNodes("ns:MirCiaLoadAmtG/ns:MirCiaLoadAmtT", nsFVL);
+
+                        if (actefdatefvl == null || seqnumberfvl == null) continue;
+
+                        int count = Math.Min(seqnumberfvl.Count, actefdatefvl.Count);
+                        for (int i = 0; i < count; i++)
+                        {
+                            string effDate = actefdatefvl[i]?.InnerText ?? "";
+                            if (string.IsNullOrWhiteSpace(effDate)) continue;
+
+                            fundActivityList.Add(new FundActivityInformation
+                            {
+                                ActivityEffectiveDate = effDate,
+                                SequenceNumber = seqnumberfvl[i]?.InnerText ?? "",
+                                ActivityType = actvtypfvl?[i]?.InnerText ?? "",
+                                TotalPremiumReceived = topprmfvl?[i]?.InnerText ?? "",
+                                NetAmount = netamtfvl?[i]?.InnerText ?? "",
+                                TransferCharges = tranchrgfvl?[i]?.InnerText ?? ""
+                            });
+                        }
+                    }
+                }
+
+                // ============================================================
+                // VALIDASI — semua kritis kosong → empty data
+                // ============================================================
+                bool isAllEmpty = string.IsNullOrWhiteSpace(MCV)
+                               && string.IsNullOrWhiteSpace(CSurrenderValue)
+                               && string.IsNullOrWhiteSpace(LoanAmountv)
+                               && fundInfoList.Count == 0;
+
+                if (isAllEmpty)
+                    return Ok(BuildEmptySuccessResponse(policyId));
+
+                // ============================================================
+                // ASSEMBLE RESPONSE
+                // ============================================================
+                var responseData = new ValueInformationResponse
+                {
+                    PolicyId = policyId,
+                    MCVNetBaseCaseValue = ParseDecimal(MCV),
+                    SurrenderCharge = ParseDecimal(SCharge),
+                    CashSurrenderValue = ParseDecimal(CSurrenderValue),
+                    PaidupAdditionsCaseValue = ParseDecimal(PaidupAdditionsCaseValuev),
+                    DividendVCVonDeposit = ParseDecimal(DividendVCVonDepositv),
+                    DividendVCVonDepositInterest = ParseDecimal(DividendVCVonDepositInterestv),
+                    TerminalBonusforSurrender = ParseDecimal(TerminalBonusforSurrenderv),
+                    TotalBonus = ParseDecimal(Totalbonusv),
+                    UnearnedPremium = ParseDecimal(UnearnedPremiumv),
+                    ReturnofPremiumAmount = ParseDecimal(ReturnofPremiumAmountv),
+                    CashValueofAccumulatedRevisionary = ParseDecimal(CashValueofAccumulatedRevisionaryv),
+                    OutstandingDisbursements = ParseDecimal(OutstandingDisbursementsv),
+                    LoanAmount = ParseDecimal(LoanAmountv),
+                    LoanInterestPaidCapitalizedYTD = ParseDecimal(LoanInterestPaidCapitalizedYTDv),
+                    APLAmount = ParseDecimal(APLAmountv),
+                    APLInterestPaidCapitalizedYTD = ParseDecimal(APLInterestPaidCapitalizedYTDv),
+                    PremiumSuspense = ParseDecimal(PSuspense),
+                    MiscellaneousSuspense = ParseDecimal(MSuspense),
+                    MaximumLoanAmountAvailable = ParseDecimal(MLoanAmountAvailable),
+                    FundInformation = fundInfoList.Count > 0 ? fundInfoList : null,
+                    FundInquiryActivity = fundActivityList.Count > 0 ? fundActivityList : null
+                };
+
+                return Ok(new ApiSuccessResponse<ValueInformationResponse>
+                {
+                    Success = true,
+                    Message = "Data berhasil diambil.",
+                    Data = responseData,
+                    Timestamp = DateTime.Now
+                });
+            }
+            catch (TaskCanceledException)
+            {
+                return StatusCode(StatusCodes.Status500InternalServerError, new ApiErrorResponse
+                {
+                    StatusCode = 500,
+                    Message = "Request Timeout",
+                    Detail = "Koneksi ke TXLife melebihi batas waktu.",
+                    Timestamp = DateTime.Now
+                });
+            }
+            catch (HttpRequestException ex)
+            {
+                return StatusCode(StatusCodes.Status500InternalServerError, new ApiErrorResponse
+                {
+                    StatusCode = 500,
+                    Message = "Service Unavailable",
+                    Detail = $"Gagal terhubung ke TXLife: {ex.Message}",
+                    Timestamp = DateTime.Now
+                });
+            }
+            catch (XmlException ex)
+            {
+                return StatusCode(StatusCodes.Status500InternalServerError, new ApiErrorResponse
+                {
+                    StatusCode = 500,
+                    Message = "Parse Error",
+                    Detail = $"Response XML tidak valid: {ex.Message}",
+                    Timestamp = DateTime.Now
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(StatusCodes.Status500InternalServerError, new ApiErrorResponse
+                {
+                    StatusCode = 500,
+                    Message = "Internal Server Error",
+                    Detail = ex.Message,
+                    Timestamp = DateTime.Now
+                });
+            }
+        }
+
+        // ============================================================
+        // BUILD EMPTY SUCCESS RESPONSE
+        // ============================================================
+        private static ApiSuccessResponse<ValueInformationResponse> BuildEmptySuccessResponse(
+            string policyId) =>
+            new ApiSuccessResponse<ValueInformationResponse>
+            {
+                Success = true,
+                Message = "Data tidak ditemukan.",
+                Timestamp = DateTime.Now,
+                Data = new ValueInformationResponse
+                {
+                    PolicyId = policyId,
+                    MCVNetBaseCaseValue = 0,
+                    SurrenderCharge = 0,
+                    CashSurrenderValue = 0,
+                    PaidupAdditionsCaseValue = 0,
+                    DividendVCVonDeposit = 0,
+                    DividendVCVonDepositInterest = 0,
+                    TerminalBonusforSurrender = 0,
+                    TotalBonus = 0,
+                    UnearnedPremium = 0,
+                    ReturnofPremiumAmount = 0,
+                    CashValueofAccumulatedRevisionary = 0,
+                    OutstandingDisbursements = 0,
+                    LoanAmount = 0,
+                    LoanInterestPaidCapitalizedYTD = 0,
+                    APLAmount = 0,
+                    APLInterestPaidCapitalizedYTD = 0,
+                    PremiumSuspense = 0,
+                    MiscellaneousSuspense = 0,
+                    MaximumLoanAmountAvailable = 0,
+                    FundInformation = new List<FundInformation>
+                    {
+                        new FundInformation
+                        {
+                            Fund                     = "",
+                            UnitPrice                = 0,
+                            ApproximateNumberofUnits = 0,
+                            BaseCashValue            = 0,
+                            CashSurrenderValue       = 0,
+                            FundPercentage           = 0
+                        }
+                    },
+                    FundInquiryActivity = new List<FundActivityInformation>
+                    {
+                        new FundActivityInformation
+                        {
+                            ActivityEffectiveDate = "",
+                            SequenceNumber        = "",
+                            ActivityType          = "",
+                            TotalPremiumReceived  = "",
+                            NetAmount             = "",
+                            TransferCharges       = ""
+                        }
+                    }
+                }
+            };
+
+        // ============================================================
+        // HELPER — ParseDecimal
+        // ============================================================
+        private static decimal ParseDecimal(string? raw) =>
+            decimal.TryParse(raw, NumberStyles.Any,
+                CultureInfo.InvariantCulture, out var v) ? v : 0m;
+    }
+}
