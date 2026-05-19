@@ -1,0 +1,76 @@
+-- sp_GetCertificateList.sql
+CREATE OR ALTER PROCEDURE [dbo].[sp_GetCertificateList]
+    @MemberID           VARCHAR(50)  = NULL,
+    @CompanyID          VARCHAR(10)  = NULL,
+    @PolicyID           VARCHAR(50)  = NULL,
+    @CertificateID      VARCHAR(50)  = NULL,
+    @CertificateStatus  VARCHAR(10)  = NULL,
+    @PageNumber         INT          = 1,
+    @PageSize           INT          = 20,
+    @SortColumn         VARCHAR(50)  = 'CreatedDate',
+    @SortDirection      VARCHAR(4)   = 'DESC'
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    IF @PageNumber < 1 SET @PageNumber = 1;
+    IF @PageSize < 1 OR @PageSize > 200 SET @PageSize = 20;
+
+    DECLARE @Offset INT = (@PageNumber - 1) * @PageSize;
+
+    -- Result Set 1: Total count
+    SELECT COUNT(1) AS TotalRecords
+    FROM [dbo].[vCertificate]
+    WHERE
+        (@MemberID         IS NULL OR MemberID         = @MemberID)
+        AND (@CompanyID    IS NULL OR CompanyID         = @CompanyID)
+        AND (@PolicyID     IS NULL OR PolicyID          = @PolicyID)
+        AND (@CertificateID IS NULL OR CertificateID   = @CertificateID)
+        AND (@CertificateStatus IS NULL OR CertificateStatus = @CertificateStatus);
+
+    -- Result Set 2: Paged data
+    SELECT
+        MemberID, CompanyID, PolicyID, CertificateID,
+        CertificateStatus, CertificateStatusName,
+        UnderwritingStatus, UnderwritingStatusName,
+        HasAdminPending,
+        InsuredID, InsuredName, InsuredDOB, InsuredSex, InsuredAge,
+        DebiturID, DebiturName, DebiturDOB, DebiturSex, DebiturAge,
+        CorrespondenceAddress, JoinIncome, JoinCertificateID,
+        ApplicationNo, AgreementNo, BillingMode, CurrencyID,
+        AppReceiveDate, EffectiveDate, InforceDate, InforceBy,
+        TerminateDate, TerminateBy, MedicalType,
+        ProductPackageID, BasePlan, BillToDate, PaidToDate,
+        MonthlyInstallment, LoanDuration, LoanMaturityDate, LoanInterestRate,
+        SalaryIncome, SpouseIncome, InvestmentIncome, BusinessIncome,
+        OtherIncome, AnnualNetIncome, DependentNumber, Remark,
+        CreatedDate, CreatedBy, TotalSAR, UpdatedDate, UpdatedBy,
+        PendingTransNo, PendingTransType, TwoYearsSAR, ApplicationSignDate,
+        IRACommission, InsuredWeight, BMIRate, BMIHRisk,
+        ApprovedDate, ApprovedBy, UnderwritingID, ProductType,
+        StatusChangeDate, ProductPackageName, ProductTypeName,
+        PolicyOwnerName, SmokerID, PendingItem,
+        ProgressStatus, ProgressStatusName,
+        PartnerID, PartnerName, ContractID, PrevPolicyID, PrevSurrAmt,
+        HasExtendDuration, CoverageMaturity, CoverageDuration,
+        PlanID, MobileNumber
+    FROM [dbo].[vCertificate]
+    WHERE
+        (@MemberID         IS NULL OR MemberID         = @MemberID)
+        AND (@CompanyID    IS NULL OR CompanyID         = @CompanyID)
+        AND (@PolicyID     IS NULL OR PolicyID          = @PolicyID)
+        AND (@CertificateID IS NULL OR CertificateID   = @CertificateID)
+        AND (@CertificateStatus IS NULL OR CertificateStatus = @CertificateStatus)
+    ORDER BY
+        CASE WHEN @SortColumn='MemberID'    AND @SortDirection='ASC'  THEN MemberID    END ASC,
+        CASE WHEN @SortColumn='MemberID'    AND @SortDirection='DESC' THEN MemberID    END DESC,
+        CASE WHEN @SortColumn='InsuredName' AND @SortDirection='ASC'  THEN InsuredName END ASC,
+        CASE WHEN @SortColumn='InsuredName' AND @SortDirection='DESC' THEN InsuredName END DESC,
+        CASE WHEN @SortColumn='EffectiveDate' AND @SortDirection='ASC'  THEN EffectiveDate END ASC,
+        CASE WHEN @SortColumn='EffectiveDate' AND @SortDirection='DESC' THEN EffectiveDate END DESC,
+        CASE WHEN @SortDirection='ASC'  THEN CreatedDate END ASC,
+        CASE WHEN @SortDirection='DESC' THEN CreatedDate END DESC
+    OFFSET @Offset ROWS
+    FETCH NEXT @PageSize ROWS ONLY;
+END
+GO
