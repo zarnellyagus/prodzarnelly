@@ -1,0 +1,81 @@
+USE [NDICLIPS04]
+GO
+/****** Object:  StoredProcedure [dbo].[sp_GetCertificateNewList]    Script Date: 21/05/2026 00:10:09 ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+ALTER   PROCEDURE [dbo].[sp_GetCertificateNewList]
+    @MemberID          VARCHAR(50)  = NULL,
+    @CompanyID         VARCHAR(10)  = NULL,
+    @PolicyID          VARCHAR(50)  = NULL,
+    @CertificateID     VARCHAR(50)  = NULL,
+    @CertificateStatus VARCHAR(10)  = NULL,
+    @ProgressStatus    VARCHAR(10)  = NULL,
+    @InsuredName       VARCHAR(200) = NULL,
+    @PageNumber        INT          = 1,
+    @PageSize          INT          = 20,
+    @SortColumn        VARCHAR(50)  = 'EffectiveDate',
+    @SortDirection     VARCHAR(4)   = 'DESC'
+AS
+BEGIN
+    SET NOCOUNT ON;
+    IF @PageNumber < 1 SET @PageNumber = 1;
+    IF @PageSize   < 1 OR @PageSize > 200 SET @PageSize = 20;
+
+    DECLARE @Offset INT = (@PageNumber - 1) * @PageSize;
+
+    -- Result Set 1: Total count
+    SELECT COUNT(1) AS TotalRecords
+    FROM [dbo].[vcertificatenew]
+    WHERE
+        (@MemberID          IS NULL OR MemberID          = @MemberID)
+        AND (@CompanyID     IS NULL OR CompanyID         = @CompanyID)
+        AND (@PolicyID      IS NULL OR PolicyID          = @PolicyID)
+        AND (@CertificateID IS NULL OR CertificateID     = @CertificateID)
+        AND (@CertificateStatus IS NULL OR CertificateStatus = @CertificateStatus)
+        AND (@ProgressStatus    IS NULL OR ProgressStatus    = @ProgressStatus)
+        AND (@InsuredName       IS NULL OR InsuredName LIKE '%' + @InsuredName + '%');
+
+    -- Result Set 2: Paged data
+    SELECT
+        MemberID,
+        CompanyID,
+        PolicyID,
+        CertificateID,
+        CertificateStatus,
+        CertificateStatusName,
+        InsuredID,
+        InsuredName,
+        ProductTypeName,
+        PolicyOwnerName,
+        AppReceiveDate,
+        EffectiveDate,
+        PendingItem,
+        ProgressStatus,
+        ProgressStatusName,
+        ProductType,
+        InforceDate,
+        TerminateDate
+    FROM [dbo].[vcertificatenew]
+    WHERE
+        (@MemberID          IS NULL OR MemberID          = @MemberID)
+        AND (@CompanyID     IS NULL OR CompanyID         = @CompanyID)
+        AND (@PolicyID      IS NULL OR PolicyID          = @PolicyID)
+        AND (@CertificateID IS NULL OR CertificateID     = @CertificateID)
+        AND (@CertificateStatus IS NULL OR CertificateStatus = @CertificateStatus)
+        AND (@ProgressStatus    IS NULL OR ProgressStatus    = @ProgressStatus)
+        AND (@InsuredName       IS NULL OR InsuredName LIKE '%' + @InsuredName + '%')
+    ORDER BY
+        CASE WHEN @SortColumn = 'MemberID'      AND @SortDirection = 'ASC'  THEN MemberID      END ASC,
+        CASE WHEN @SortColumn = 'MemberID'      AND @SortDirection = 'DESC' THEN MemberID      END DESC,
+        CASE WHEN @SortColumn = 'InsuredName'   AND @SortDirection = 'ASC'  THEN InsuredName   END ASC,
+        CASE WHEN @SortColumn = 'InsuredName'   AND @SortDirection = 'DESC' THEN InsuredName   END DESC,
+        CASE WHEN @SortColumn = 'EffectiveDate' AND @SortDirection = 'ASC'  THEN EffectiveDate END ASC,
+        CASE WHEN @SortColumn = 'EffectiveDate' AND @SortDirection = 'DESC' THEN EffectiveDate END DESC,
+        CASE WHEN @SortColumn = 'InforceDate'   AND @SortDirection = 'ASC'  THEN InforceDate   END ASC,
+        CASE WHEN @SortColumn = 'InforceDate'   AND @SortDirection = 'DESC' THEN InforceDate   END DESC,
+        EffectiveDate DESC  -- default fallback
+    OFFSET @Offset ROWS
+    FETCH NEXT @PageSize ROWS ONLY;
+END
